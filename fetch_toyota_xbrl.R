@@ -175,25 +175,53 @@ parse_xbrl <- function(xbrl_bytes) {
   cat(paste(" ", sort(shares_tags), collapse = "\n"), "\n")
 
   # --- 値抽出ヘルパー -------------------------------------------------------
-  find_value <- function(keywords) {
+  # context_prefer: contextRef に含まれるべき文字列（優先順）
+  # context_exclude: contextRef に含まれていたら除外する文字列
+  find_value <- function(keywords, context_prefer, context_exclude = character(0)) {
+
+    node_to_record <- function(node) {
+      txt <- trimws(xml_text(node))
+      if (nchar(txt) == 0 || !grepl("^-?[0-9]+$", txt)) return(NULL)
+      list(
+        tag      = xml_name(node),
+        value    = as.numeric(txt),
+        context  = xml_attr(node, "contextRef"),
+        decimals = xml_attr(node, "decimals"),
+        unit_ref = xml_attr(node, "unitRef")
+      )
+    }
+
     for (kw in keywords) {
-      # XPath で ローカル名に kw を含む要素を探す
-      # *[contains(local-name(), 'kw')] は標準 XPath で動作する
       xpath   <- sprintf("//*[contains(local-name(), '%s')]", kw)
       matches <- xml_find_all(doc, xpath)
 
-      for (node in matches) {
-        txt <- trimws(xml_text(node))
-        if (nchar(txt) > 0 && grepl("^-?[0-9]+$", txt)) {
-          return(list(
-            tag      = xml_name(node),
-            value    = as.numeric(txt),
-            context  = xml_attr(node, "contextRef"),
-            decimals = xml_attr(node, "decimals"),
-            unit_ref = xml_attr(node, "unitRef")
-          ))
-        }
+      # 数値を持つ候補を全部収集
+      candidates <- Filter(Negate(is.null), lapply(matches, node_to_record))
+      if (length(candidates) == 0) next
+
+      # 候補を全表示
+      cat(sprintf("\n  [候補一覧: %s]\n", kw))
+      for (r in candidates) {
+        cat(sprintf("    contextRef=%-55s value=%s\n",
+                    r$context, format(r$value, big.mark = ",")))
       }
+
+      # 除外フィルタ
+      if (length(context_exclude) > 0) {
+        candidates <- Filter(
+          function(r) !any(sapply(context_exclude, grepl, x = r$context)),
+          candidates
+        )
+      }
+
+      # 優先 contextRef を順番に試す
+      for (pref in context_prefer) {
+        hit <- Filter(function(r) grepl(pref, r$context), candidates)
+        if (length(hit) > 0) return(hit[[1]])
+      }
+
+      # 優先パターンに合うものがなければ残った候補の先頭を返す
+      if (length(candidates) > 0) return(candidates[[1]])
     }
     NULL
   }
@@ -207,7 +235,10 @@ parse_xbrl <- function(xbrl_bytes) {
     "ProfitLoss",
     "NetIncome"
   )
-  res_profit <- find_value(profit_priority)
+  # CurrentYearDuration（連結・当期）を最優先。Prior系は除外しない（フォールバック用に残す）
+  profit_context_prefer  <- c("CurrentYearDuration")
+  profit_context_exclude <- character(0)
+  res_profit <- find_value(profit_priority, profit_context_prefer, profit_context_exclude)
 
   if (!is.null(res_profit)) {
     cat(sprintf("\n当期純利益:\n"))
@@ -243,7 +274,10 @@ parse_xbrl <- function(xbrl_bytes) {
     "NumberOfIssuedShares",
     "IssuedShares"
   )
-  res_shares <- find_value(shares_priority)
+  # CurrentYearInstant を優先。"_NonConsolidatedMember" サフィックス付きは後回し
+  shares_context_prefer  <- c("^CurrentYearInstant$", "CurrentYearInstant")
+  shares_context_exclude <- character(0)
+  res_shares <- find_value(shares_priority, shares_context_prefer, shares_context_exclude)
 
   if (!is.null(res_shares)) {
     cat(sprintf("\n発行済株式数:\n"))
