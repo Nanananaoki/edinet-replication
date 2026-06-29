@@ -117,15 +117,29 @@ extract_xbrl_from_zip <- function(raw_bytes) {
   cat(sprintf("  ZIP 内ファイル数: %d\n", length(all_files)))
 
   xbrl_files <- all_files[grepl("\\.xbrl$", all_files, ignore.case = TRUE)]
-  cat(sprintf("  XBRL ファイル: %s\n", paste(xbrl_files, collapse = ", ")))
+  cat(sprintf("  XBRL ファイル一覧:\n"))
+  cat(paste("   ", xbrl_files, collapse = "\n"), "\n")
 
   if (length(xbrl_files) == 0) {
     cat("ZIP 内容:\n"); print(head(all_files, 20))
     stop("XBRL ファイルが見つかりませんでした。")
   }
 
-  # パスが短い（ルートに近い）ものを優先
-  target <- xbrl_files[order(nchar(xbrl_files))][1]
+  # PublicDoc 配下の有価証券報告書本体を優先。AuditDoc（監査報告書）は除外する。
+  public_xbrl <- xbrl_files[
+    grepl("PublicDoc", xbrl_files) &
+    !grepl("AuditDoc", xbrl_files) &
+    grepl("jpcrp030000-asr-001", basename(xbrl_files))
+  ]
+
+  if (length(public_xbrl) == 0) {
+    # jpcrp030000-asr-001 に限定せず PublicDoc 配下全体にフォールバック
+    public_xbrl <- xbrl_files[
+      grepl("PublicDoc", xbrl_files) & !grepl("AuditDoc", xbrl_files)
+    ]
+  }
+
+  target <- if (length(public_xbrl) > 0) public_xbrl[1] else xbrl_files[1]
   cat(sprintf("  使用する XBRL: %s\n", target))
 
   unzip(tmp_zip, files = target, exdir = tmp_dir, overwrite = TRUE)
